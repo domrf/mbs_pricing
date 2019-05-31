@@ -49,14 +49,14 @@
 #### **[model](https://github.com/domrf/mbs_pricing/tree/master/model)**
 Основной модуль с системными файлами модели. Состоит из набора логически независимых моделей, в последовательности их применения:
 
- 1. [model_lld](https://github.com/domrf/mbs_pricing/blob/master/model/model_lld.py) - **кластеризация** входных данных по закладным;
+ 1. [model_lld](https://github.com/domrf/mbs_pricing/blob/master/model/model_lld.py) - **кластеризация входных данных** по закладным;
  2. [model_cir](https://github.com/domrf/mbs_pricing/blob/master/model/model_cir.py) - **моделирование процентных ставок и макроэкономических показателей**, необходимых для расчета денежных потоков;
  3. [model_cfm](https://github.com/domrf/mbs_pricing/blob/master/model/model_cfm.py) - **прогноз денежных потоков по пулу закладных** в результате моделирования поведения заемщиков и жизненного цикла пула;
  4. [model_mbs](https://github.com/domrf/mbs_pricing/blob/master/model/model_mbs.py) - **структурирование** и оценка денежных потоков по ИЦБ.
 
 
 #### **[impdata](https://github.com/domrf/mbs_pricing/tree/master/impdata)**
-Вспомогательный модуль с необходимыми для проведения оценок внешними данными:
+Вспомогательный модуль с необходимыми для проведения оценок **внешними данными**:
 
  1. [gparams.py](https://github.com/domrf/mbs_pricing/blob/master/impdata/gparams.py) – исторические данные для параметризации КБД; 
  2. [histcf.py](https://github.com/domrf/mbs_pricing/blob/master/impdata/histcf.py) – исторические данные по амортизации и купонным выплатам ИЦБ;
