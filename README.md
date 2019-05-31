@@ -49,10 +49,10 @@
 #### **[model](https://github.com/domrf/mbs_pricing/tree/master/model)**
 Основной модуль с системными файлами модели. Состоит из набора логически независимых моделей, в последовательности их применения:
 
- 1. [model_lld](https://github.com/domrf/mbs_pricing/blob/master/model/model_lld.py) - кластеризация входных данных по закладным;
- 2. [model_cir](https://github.com/domrf/mbs_pricing/blob/master/model/model_cir.py) - моделирование процентных ставок и макроэкономических показателей, необходимых для расчета денежных потоков;
- 3. [model_cfm](https://github.com/domrf/mbs_pricing/blob/master/model/model_cfm.py) - прогноз денежных потоков по пулу закладных в результате моделирования поведения заемщиков и жизненного цикла пула;
- 4. [model_mbs](https://github.com/domrf/mbs_pricing/blob/master/model/model_mbs.py) - структурирование и оценка денежных потоков по ИЦБ.
+ 1. [model_lld](https://github.com/domrf/mbs_pricing/blob/master/model/model_lld.py) - **кластеризация** входных данных по закладным;
+ 2. [model_cir](https://github.com/domrf/mbs_pricing/blob/master/model/model_cir.py) - **моделирование процентных ставок и макроэкономических показателей**, необходимых для расчета денежных потоков;
+ 3. [model_cfm](https://github.com/domrf/mbs_pricing/blob/master/model/model_cfm.py) - **прогноз денежных потоков по пулу закладных** в результате моделирования поведения заемщиков и жизненного цикла пула;
+ 4. [model_mbs](https://github.com/domrf/mbs_pricing/blob/master/model/model_mbs.py) - **структурирование** и оценка денежных потоков по ИЦБ.
 
 
 #### **[impdata](https://github.com/domrf/mbs_pricing/tree/master/impdata)**
@@ -65,10 +65,11 @@
  5. [mbs.py](https://github.com/domrf/mbs_pricing/blob/master/impdata/mbs.py) – перечень основных параметров ИЦБ;
  6. [regions.py](https://github.com/domrf/mbs_pricing/blob/master/impdata/regions.py) – справочник кодов регионов.
 
-#### **[specs](https://github.com/domrf/mbs_pricing/tree/master/specs)** - вспомогательный модуль с настройками различных **моделей миграций**.
+#### **[specs](https://github.com/domrf/mbs_pricing/tree/master/specs)**
+Вспомогательный модуль с настройками различных **моделей миграций**.
 
 ### Данные с примерами
-[examples](https://github.com/domrf/mbs_pricing/tree/master/examples) - вспомогательный модуль, содержащий **набор примеров входных данных** по закладным в составе ИЦБ.
+[examples](https://github.com/domrf/mbs_pricing/tree/master/examples) - **набор примеров входных данных** по закладным в составе ИЦБ.
 
 ****
 
