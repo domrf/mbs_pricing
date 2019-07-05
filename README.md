@@ -1,6 +1,6 @@
 
 <div align="center">
- <img width=12%, height=12%, src="https://github.com/domrf/mbs_pricing/blob/master/logo.JPG"><br><br>
+ <img width=12%, height=12%, src="logo.JPG"><br><br>
 </div>
 
 # Модель ценообразования ипотечных ценных бумаг

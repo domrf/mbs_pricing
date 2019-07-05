@@ -58,7 +58,8 @@ def check_field(sf, bounds=None, fillna=None, unique=False, msglist=None):
             median = temp[~L0].quantile(.5)
             if pd.isnull(median):
                 median = 0.0
-                warn_list.append({'column': '', 'first': 0, 'count': 0, 'error': u'В файле отсутсвуют данные "%s"' % sf.name})
+                if msglist is not None:
+                    msglist.append({'column': '', 'first': 0, 'count': 0, 'error': u'В файле отсутсвуют данные "%s"' % sf.name})
         else:
             median = fillna
         temp[L0] = median

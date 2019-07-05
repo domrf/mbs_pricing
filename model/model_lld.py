@@ -149,10 +149,9 @@ def run(df, inputs, newseed=None):
 
     # join MIR at the issue
     df['Start_Date'] = df[LLD.Issue_Date].values.astype('datetime64[M]')
-    df = df.join(inputs.Datasets.History[[CFN.MIR]], how='left', on='Start_Date')
-    df.loc[pd.isnull(df[CFN.MIR]), CFN.MIR] = 12.85
-    df[LLD.Rating] = df[LLD.Interest_Percent] - df[CFN.MIR]
-    df[LLD.MIR0] = df[CFN.MIR]
+    df = df.join(inputs.Datasets.History[[CFN.MIR]].rename(columns={CFN.MIR:LLD.MIR0}), how='left', on='Start_Date')
+    df.loc[pd.isnull(df[LLD.MIR0]), LLD.MIR0] = 12.85
+    df[LLD.Rating] = df[LLD.MIR0] - df[LLD.Interest_Percent]
 
     # join HPI from issue to current
     if LLD.Indexing not in df.columns:
