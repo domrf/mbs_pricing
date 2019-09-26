@@ -3,7 +3,8 @@ import time
 import numpy as np
 import pandas as pd
 
-from names import CFN, LLD
+from common import xparse, ALF
+from impdata.names import CFN, LLD
 import specs
 
 # --- K-Means clustering algorithm ---
@@ -41,6 +42,9 @@ def randomsample(X, n):
         return X[np.random.choice(xrange(X.shape[0]), size=int(n), replace=False)]
 
 def kmeanssample(X, k, nsample=100, **kwargs):
+    # merge w kmeans ? mttiw
+    # v large N: sample N^1/2, N^1/2 of that
+    # seed like sklearn ?
     N, dim = X.shape
     if nsample == 0:
         nsample = max(2*np.sqrt(N), 10*k)
@@ -68,6 +72,8 @@ def build_statistics(df, currdate):
 
     res = df.groupby(by=['Bucket']).agg(agg_dict)
 
+    # res[LLD.Original_Debt] *= 10**-6
+    # res[LLD.Current_Debt] *= 10**-6
     res['Mortgage_Size'] = res[LLD.Current_Debt] / res[LLD.Mortgage_No]
 
     to_rename = {
@@ -85,33 +91,52 @@ def build_statistics(df, currdate):
 
     return res
 
+# Lk normalization
+def l_normalize(a, axis=-1, order=1):
+    l = np.atleast_1d(np.linalg.norm(np.copy(a), order, axis))
+    l[l == 0] = 1
+    return a / np.expand_dims(l, axis)
+
+# Min-max as an alternative
+def min_max_scale(data):
+    # X_scaled = scale * X + 0 - X.min(axis=0) * scale
+    # where scale = (1 - 0) / (X.max(axis=0) - X.min(axis=0))
+
+    scale = 1.0 / (np.nanmax(data, axis=0) - np.nanmin(data, axis=0))
+    min_ = np.nanmin(data, axis=0)
+    return (data - min_) * scale
+
+def normalize(a, axis=-1, order=1):
+    return l_normalize(a, axis, order)
+
 def make_clust(df, n_syn):
 
+    # Filter out matured loans so that clustering be done over actual portfolio
+    df = df[df[LLD.Current_Debt] > 0].copy()
+
     # clustering over credit seasoning and maturity
-    X0 = df[[LLD.Seasoning, LLD.Maturity]].values
+    X0 = normalize(df[[LLD.Seasoning, LLD.Maturity]].values)
+    nc0 = 1
     if n_syn is None:
         arr = df[LLD.Seasoning].values + df[LLD.Maturity].values
         nc0 = min(int(1 + (arr.max() - arr.min()) / 60.0), 5)
-    elif n_syn <= 1.0:
-        nc0 = 1
-    else:
+    elif n_syn > 1.0:
         nc0 = int(n_syn**0.5) + 1
     df['idx1'] = kmeanssample(X0, nc0)[1]
 
-    X1 = df[[LLD.Interest_Percent]].values
+    X1 = normalize(df[[LLD.Interest_Percent]].values)
+    nc1 = 1
     if n_syn is None:
         arr = df[LLD.Interest_Percent].values
         nc1 = min(int(1 + (arr.max() - arr.min()) / 3.0), 5)
-    elif n_syn <= 1.0:
-        nc0 = 1
-    else:
+    elif n_syn > 1:
         nc1 = int(n_syn**0.5) + 1
     df['idx2'] = kmeanssample(X1, nc1)[1]
 
     def wa_func(x):
         return np.average(x, weights=df.loc[x.index, LLD.Current_Debt])
 
-    # renaming
+    # rename
     df[LLD.Total_Debt] = df[LLD.Current_Debt]
     df.rename(columns={LLD.Mortgage_No: LLD.Mortgage_Num}, inplace=True)
 
@@ -123,6 +148,7 @@ def make_clust(df, n_syn):
             LLD.Total_Debt: np.average,
             LLD.Interest_Percent: wa_func,
             LLD.Seasoning: wa_func,
+            # LLD.Maturity: np.average,
             LLD.Maturity: wa_func,
             LLD.Payment: np.average,
             LLD.LTV: wa_func,
@@ -132,19 +158,21 @@ def make_clust(df, n_syn):
             LLD.Partial: wa_func,
             LLD.PartSize: wa_func,
             LLD.Indexing: wa_func,
-            LLD.Product: wa_func,
+            # LLD.Product: wa_func,
         }
     )
     res.reset_index(inplace=True)
     return res
 
-def run(df, inputs, newseed=None):
+def run(df, inputs, newseed=None, makeclust=True):
 
     np.random.seed(newseed)
 
     if len(df) == 0:
         raise Exception('empty LLD (PortfolioID=%d, InputFileName=%s' % (inputs.PortfolioID, inputs.InputFileName))
 
+    # # join region data to LLD
+    # df = df.join(inputs.Datasets.Regions, how='left', on=LLD.Region)
     df.loc[pd.isnull(df[LLD.Region]), LLD.Region] = 77
 
     # join MIR at the issue
@@ -152,6 +180,9 @@ def run(df, inputs, newseed=None):
     df = df.join(inputs.Datasets.History[[CFN.MIR]].rename(columns={CFN.MIR:LLD.MIR0}), how='left', on='Start_Date')
     df.loc[pd.isnull(df[LLD.MIR0]), LLD.MIR0] = 12.85
     df[LLD.Rating] = df[LLD.MIR0] - df[LLD.Interest_Percent]
+
+    curr_date = inputs.Parameters.ActualLLDMonth
+    quar_date = np.datetime64("%04d-%02d-%02d" % (pd.to_datetime(curr_date).year, pd.to_datetime(curr_date).quarter * 3 - 2, 1), 'M')
 
     # join HPI from issue to current
     if LLD.Indexing not in df.columns:
@@ -169,29 +200,57 @@ def run(df, inputs, newseed=None):
     df.loc[pd.isnull(df[LLD.Education]), LLD.Education] = 3
 
     # --- apply simple lld scoring ---
+    models = ['Default', 'Prepayment', 'Partial', 'PartSize']
+    scores = [LLD.Default, LLD.Prepayment, LLD.Partial, LLD.PartSize]
+
     models = {
-        'Default':LLD.Default,
-        'Prepayment':LLD.Prepayment,
-        'Partial':LLD.Partial,
-        'PartSize':LLD.PartSize
+        'Default':      LLD.Default,
+        'Prepayment':   LLD.Prepayment,
+        'Partial':      LLD.Partial,
+        'PartSize':     LLD.PartSize
     }
 
     # new type of adjustment applying
+    for col in models.keys():
+        df[models[col]] = 1.0
+
+    # # --- for model debug ---
+    # df[LLD.Product] = 0
+
     for product in df[LLD.Product].unique():
+
         # select only current product
         L0 = df[LLD.Product]==product
+
         # get adjustments constant rules
         if product in specs.adjust_dict.keys():
             adjusts = specs.adjust_dict[product].const_adjusts
         else:
             print time.strftime('%Y-%m-%d %H:%M:%S'), 'Model does not support product type = "%s" (product was set to default type).' % product
             adjusts = specs.adjust_dict[0].const_adjusts
+
         # apply adjustments to selected data
-        for cov in adjusts:
-            for col in adjusts[cov].columns[1:]:
-                if models[col] not in df.columns:
-                    df[models[col]] = 1.0
-                df.loc[L0, models[col]] *= np.interp(df.loc[L0, cov].values, adjusts[cov]['Value'].values, adjusts[cov][col].values)
+        for key in adjusts:
+
+            expr, kwargs = xparse(key)
+            if expr is None:
+                cov = df.loc[L0, key].values
+            else:
+                for i in range(len(kwargs)):
+                    # Note: This only works in Python 2.x.
+                    locals()[ALF[i]] = df.loc[L0, kwargs[ALF[i]]].values
+                cov = eval(expr)
+
+            for col in adjusts[key].columns[1:]:
+                df.loc[L0, models[col]] *= np.interp(cov, adjusts[key]['Value'].values, adjusts[key][col].values)
+                # --- for model debug ---
+                # if col == 'Default':
+                #     if key+'_adj' not in df.columns:
+                #         df[key+'_adj'] = 0.0
+                #     df.loc[L0, key+'_adj'] = np.interp(cov, adjusts[key]['Value'].values, adjusts[key][col].values)
+
+    # --- for model debug ---
+    # df.to_csv(r'\\vfs02.ahml1.ru\CFM\WORK_DIR\Queue\Service\dmp\temp_lld.csv', sep='\t', index=False, encoding='utf8')
 
     currdate = inputs.Parameters.ActualLLDMonth
     # --- Seasoning ---
@@ -220,12 +279,19 @@ def run(df, inputs, newseed=None):
     if (inputs.Parameters.NumberOfSyntheticLoans is not None) and (inputs.Parameters.NumberOfSyntheticLoans > 0):
         res = []
         for product in df[LLD.Product].unique():
-            res.append(make_clust(df.loc[df[LLD.Product].values == product, :].copy(deep=True), inputs.Parameters.NumberOfSyntheticLoans))
+            temp = make_clust(df.loc[df[LLD.Product].values == product, :].copy(deep=True), inputs.Parameters.NumberOfSyntheticLoans)
+            temp[LLD.Product] = int(product)
+            res.append(temp)
         res = pd.concat(res)
     else:
         res = df
         res[LLD.Mortgage_Num] = 1.0
         res[LLD.Total_Debt] = res[LLD.Original_Debt]
+
+        # fix - check that Product is integer
+        res.rename(columns={LLD.Product:'temp'}, inplace=True)
+        res[LLD.Product] = res['temp'].values.astype(int)
+        del res['temp']
 
     return res[[
         LLD.Mortgage_Num,

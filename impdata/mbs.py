@@ -4,7 +4,7 @@ import pandas
 
 data = pandas.DataFrame([
     [u'RU000A0ZYJT2', 1000, 'Fixed', 11.5, 3, '2017-12-07', '2018-04-28', 48197806000, 5, 627856723.6, 2847085.72, 1.0683, u'ВТБ-1'],
-    [u'RU000A0ZYL89', 1000, 'Floating', 0, 3, '2017-12-20', '2018-04-28', 7557011000, 5, 60300307.42, 2690800, 1.1620, u'Райф-1'],
+    [u'RU000A0ZYL89', 1000, 'Floating', 0, 3, '2017-12-20', '2018-04-28', 7557011000, 5, 60300307.42, 2690800, 1.1620, u'РФБ-1'],
 ],
 	columns=[
         u'ISIN',
@@ -28,10 +28,14 @@ noms = pandas.DataFrame([
     [u'RU000A0ZYJT2', '2018-07-28', 704.63, 0],
     [u'RU000A0ZYJT2', '2018-10-28', 611.01, 0],
     [u'RU000A0ZYJT2', '2019-01-28', 529.94, 0],
+    [u'RU000A0ZYJT2', '2019-04-28', 482.56, 0],
+    [u'RU000A0ZYJT2', '2019-07-28', 444.37, 0],
     [u'RU000A0ZYL89', '2018-04-28', 813.19, 0],
     [u'RU000A0ZYL89', '2018-07-28', 682.78, 0],
     [u'RU000A0ZYL89', '2018-10-28', 583.65, 0],
-    [u'RU000A0ZYL89', '2019-01-28', 501, 0],
+    [u'RU000A0ZYL89', '2019-01-28', 501.00, 0],
+    [u'RU000A0ZYL89', '2019-04-28', 455.31, 0],
+    [u'RU000A0ZYL89', '2019-07-28', 419.55, 0],
 ],
     columns=[u'ISIN', u'MeasureDate', u'CurrentNominal', u'AccruedPercentage']
 )
@@ -86,3 +90,12 @@ def get_bparams(isin, curdate):
 
     return res
 
+
+def get_avail_bonds():
+
+    df = data[[u'MBS', u'ISIN', u'IssuedDate']].copy(deep=True)
+    df[u'IssuedDate1'] = df[u'IssuedDate'].values.astype(str)
+    del df[u'IssuedDate']
+    df.rename(columns={u'IssuedDate1':u'IssuedDate', u'MBS':'Name'}, inplace=True)
+
+    return df

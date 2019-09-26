@@ -1,11 +1,14 @@
 # -*- coding: utf8 -*-
-import time
-import types
 import numpy as np
 import pandas as pd
 
+# utility subsystems
+from common import profiling
+from common import debugging
 
-from names import CFN, LLD
+from common import xparse, ALF
+from impdata.names import CFN, LLD
+
 
 class CModel(object):
 
@@ -23,111 +26,89 @@ class CModel(object):
         self.avg = avg_level
         self.baseline = np.ones((self.parent.N, self.parent.T))
         self.comb = np.ones((self.parent.N, self.parent.T))
-        self.time = np.ones((1, self.parent.T))
         self.pers = np.ones((self.parent.N, 1))
 
-        self.bY = 20.0
-        self.bY_len = int(self.bY * 12 + 1)
-
-        self.t_numb = 0
-        self.t_name = []
-        self.t_func = []
-        self.t_args = []
-
-        self.c_numb = 0
         self.c_name = []
         self.c_func = []
         self.c_args = []
+        self.c_kwgs = []
 
     def Free(self):
         for key in vars(self):
             setattr(self, key, None)
 
-    def SetBaseline(self, func, *args):
+    def SetBaseline(self, func, *args, **kwargs):
 
-        temp = np.zeros((10 * self.parent.T,))
+        max_t = np.max(self.parent.Seasoning) + self.parent.T
+
         # fill baseline risks
-        temp[:self.bY_len] = func(np.linspace(0.0, self.bY, self.bY_len), *args)
-        temp[self.bY_len:] = temp[self.bY_len-1]
+        templine = func(np.array(range(max_t))/12.0, *args, **kwargs)
 
         # get into account credit seasoning
         for i in range(self.parent.N):
-            self.baseline[i, :] = temp[self.parent.Seasoning[i]:self.parent.Seasoning[i] + self.parent.T]
+            self.baseline[i, :] = templine[self.parent.Seasoning[i]:self.parent.Seasoning[i] + self.parent.T]
 
         # fill bucket adjustments
         self.pers[:, :] = self.parent.PoolParams[self.model__xname].values.reshape((-1, 1))
 
-    def SetTimerisk(self, name, func, args):
 
-        self.t_numb += 1
-        self.t_name.append(name)
-        self.t_func.append(func)
-        self.t_args.append(args)
+    def SetCombrisk(self, name, func, *args, **kwargs):
 
-    def SetCombrisk(self, name, func, args):
-
-        self.c_numb += 1
+        # self.c_numb += 1
         self.c_name.append(name)
         self.c_func.append(func)
         self.c_args.append(args)
+        self.c_kwgs.append(kwargs)
+
+    def _getdata(self, name):
+
+        if name in self.parent.PoolParams.columns:
+            return self.parent.PoolParams[name].values.reshape((-1, 1))
+        elif name in self.parent.TimeParams.columns:
+            return self.parent.TimeParams[name].values[:self.parent.T].reshape((1, -1))
+        else:
+            return 1.0
 
     def UpdateRisks(self):
 
+        self.comb[:, :] = 1.0
+        for name, func, args, kwargs in zip(self.c_name, self.c_func, self.c_args, self.c_kwgs):
+            expr, exargs = xparse(name)
+            if expr is None:
+                cov = self._getdata(exargs[ALF[0]])
+            else:
+                for i in range(len(exargs)):
+                    # Note: This only works in Python 2.x.
+                    locals()[ALF[i]] = self._getdata(exargs[ALF[i]])
+                cov = eval(expr)
+            self.comb[:, :] *= func(cov, *args, **kwargs)
 
-            # --- update time risks ---
-            #  * OFZ_SPOT = CFN.SPT
-            #  * SEASON   = CFN.SNG
-            self.time[:, :] = 1.0
-            for i in range(self.t_numb):
-                cov = self.parent.TimeParams[self.t_name[i]].values[:self.parent.T].reshape((1, -1))
-                self.time[:, :] *= self.t_func[i](cov, *self.t_args[i])
+    def _debug_risks(self, debug_name):
 
-            # --- update comb risks ---
-            #  * MIR(t) - INTEREST_PERCENT
-            #  * IPV * HPI
-            #  * |MIR(t) - MIR(0)|
-            self.comb[:, :] = 1.0
-            for i in range(self.c_numb):
-                name_time, name_pers, operation = self.c_name[i]
-                if operation not in ['diff', 'mult', 'abs_diff']:
-                    print('unknown operation {}'.format(operation))
-                    break          
-                x = self.parent.PoolParams[name_pers].values.reshape((-1, 1))
-                y = self.parent.TimeParams[name_time].values[:self.parent.T].reshape((1, -1))
-                y_mat = np.dot(np.ones((x.shape[0], 1)), y)
-                x_mat = np.dot(x, np.ones((1, y.shape[1])))
-                if operation == 'diff':
-                    # difference
-                    cov = y_mat - x_mat
-                elif operation == 'mult':
-                    # multiplication
-                    cov = y_mat * x_mat
-                elif operation == 'abs_diff':
-                    # abs(difference)
-                    cov = np.abs(y_mat - x_mat)
+        self.comb[:, :] = 1.0
+        for name, func, args, kwargs in zip(self.c_name, self.c_func, self.c_args, self.c_kwgs):
+            if name == debug_name:
+                continue
+            expr, exargs = xparse(name)
+            if expr is None:
+                cov = self._getdata(exargs[ALF[0]])
+            else:
+                for i in range(len(exargs)):
+                    # Note: This only works in Python 2.x.
+                    locals()[ALF[i]] = self._getdata(exargs[ALF[i]])
+                cov = eval(expr)
+            self.comb[:, :] *= func(cov, *args, **kwargs)
 
-                self.comb[:, :] *= self.c_func[i](cov, *self.c_args[i])
+        return self.avg * self.baseline * self.comb * self.pers
 
-    def GetProb(self):
+    # @profiling
+    def GetProb(self, **kwargs):
 
-        # monthly risk
-        self._lambda[:, :] = self.avg * self.baseline * self.comb * self.time * self.pers
+        # risk
+        self._lambda[:, :] = self.avg * self.baseline * self.comb * self.pers
 
         # probability
         self._cond_prob[:, :] = self._lambda / (1.0 + self._lambda)
-
-    def GetProb_Partitial(self):
-
-        self._lambda[:, :] = self.avg * self.baseline * self.comb * self.time * self.pers
-
-        self._cond_prob[:, :] = self._lambda / (1.0 + self._lambda)
-
-    def GetProb_PartSize(self):
-
-        self._lambda[:, :] = self.avg * self.baseline * self.comb * self.time * self.pers
-
-        self._cond_prob[:, :] = self._lambda / (1.0 + self._lambda)
-
 
 class CState(object):
 
@@ -173,7 +154,8 @@ class CState(object):
 
 class CSimulatePool(object):
 
-    def __init__(self, parent, replace_pp=None):
+    # @profiling
+    def __init__(self, parent, replace_pp=None, **kwargs):
 
         self.parent = parent
 
@@ -187,13 +169,6 @@ class CSimulatePool(object):
         self.size_S_N = (self.parent.S, self.parent.N)
         self.size_1_N = (1, self.parent.N )
         self.size_N_T1 = (self.parent.N, self.parent.T + 1)
-        
-        # allocate objects
-        self.NUM = np.zeros(self.size_N_T1, dtype=np.float64)
-        self.DBT = np.zeros(self.size_N_T1, dtype=np.float64)
-        self.YLD = np.zeros(self.size_N_T1, dtype=np.float64)
-        self.AMT = np.zeros(self.size_N_T1, dtype=np.float64)
-        self.PMT = np.zeros(self.size_N_T1, dtype=np.float64)       
 
         self.PR = np.random.random(self.size_T_S_N)          # partial prepayment
         self.AP = np.zeros(self.size_S_N, dtype=np.float64)  # installment
@@ -202,24 +177,33 @@ class CSimulatePool(object):
 
         self.L0 = np.empty(self.size_S_N, dtype=np.bool)
 
-    def Free(self):
+
+    # @profiling
+    def Free(self, **kwargs):
         for key in vars(self):
             setattr(self, key, None)
 
+    # @profiling
     def StaticPrepaymentRate(self, *args, **kwargs):
 
         # get partial prepayment events
-        self.PR[:] = self.PR < self.parent.ModelPP._cond_prob.T[:, np.newaxis, :]
-        # multiply events by prepayment size and original debt
-        self.PR[:] *= self.parent.ModelPR._cond_prob.T[:, np.newaxis, :] * self.parent.PoolParams[LLD.Original_Debt].values[np.newaxis, np.newaxis, :]
+        self.PR[:] = self.PR < self.parent.Models['P', 'P']._cond_prob.T[:, np.newaxis, :]
 
+        # multiply events by prepayment size and original debt
+        self.PR[:] *= self.parent.Models['P', 'R']._cond_prob.T[:, np.newaxis, :] * self.parent.PoolParams[LLD.Original_Debt].values[np.newaxis, np.newaxis, :]
+
+    # @profiling
     def DynamicPrepaymentRate(self, *args, **kwargs):
 
         t = args[0]
 
-        # partial prepayment simulation
-        self.PR[t] = (self.PR[t] < self.parent.ModelPP._cond_prob[:, [t]].T) * (self.parent.ModelPR._cond_prob[:, [t]].T * self.parent.PoolParams[[LLD.Original_Debt]].values.T)
+        # get partial prepayment events
+        self.PR[t] = self.PR[t] < self.parent.Models['P', 'P']._cond_prob[:, [t]].T
 
+        # multiply events by prepayment size and original debt
+        self.PR[t] *= self.parent.Models['P', 'R']._cond_prob[:, [t]].T * self.parent.PoolParams[[LLD.Original_Debt]].values.T
+
+    # @profiling
     def AnalyticPrepaymentRate(self, *args, **kwargs):
 
         t = args[0]
@@ -228,15 +212,17 @@ class CSimulatePool(object):
         # partial prepayment simulation
         self.PR[t] = value * self.Debt_BoP[t]
 
-    def Run(self, debt, irate, mat, payment):
+    # @profiling
+    def Run(self, debt, irate, mat, payment, **kwargs):
 
         # average partial prepayment params
-        
         Debt_BoP = np.zeros(self.size_T1_S_N, dtype=np.float64)  # debt at the beginning of a period
         Debt_Int = np.zeros(self.size_T1_S_N, dtype=np.float64)  # payed interest
         Debt_Amt = np.zeros(self.size_T1_S_N, dtype=np.float64)  # debt amortization by plan
         Debt_Pmt = np.zeros(self.size_T1_S_N, dtype=np.float64)  # debt amortization by part prepayment        
         Plan_EoP = np.zeros(self.size_S_N, dtype=np.float64)
+
+        #t0 = time.clock()
 
         # average debt size in bucket
         Debt_BoP[0] = debt.reshape((1, -1))
@@ -245,8 +231,14 @@ class CSimulatePool(object):
         # average payment amount in bucket
         self.AP[:, :] = payment.reshape((1, -1)) * 12.0 * self.parent.dt
 
-        r2 = np.random.random(self.size_T_S_N) < self.Proba_Plan
+        #print('SR init: {0:.3f} sec'.format(time.clock() - t0)); t0 = time.clock()
+        
+        r2 = np.random.random(self.size_T_S_N) < self.Proba_Plan                                                         
         for t in range(self.parent.T):
+
+            # partial prepayment rate
+            # self.PrepaymentFunction(t, self.pp_value)
+            # self.DynamicPrepaymentRate(t)
 
             # payed interests
             Debt_Int[t] = Debt_BoP[t] * self.IRP
@@ -259,6 +251,8 @@ class CSimulatePool(object):
 
             # partial prepayment - only for normal amortization
             Debt_Pmt[t] = np.minimum(self.PR[t], Plan_EoP)
+            # # for z-spread
+            # Debt_Pmt[t] = 0.017344417 * Debt_BoP[t]
 
             # general debt at the end of period t, which is start of period t + 1
             Debt_BoP[t + 1] = Plan_EoP - Debt_Pmt[t]
@@ -266,25 +260,28 @@ class CSimulatePool(object):
                 break
 
             # dynamic payment amount
+            # self.AP[Debt_BoP[t] == 0] = 0.0            
             self.L0[:, :] = Debt_BoP[t + 1] > 0
             self.L0[:, :] &= r2[t] & (Debt_Pmt[t] > 0)
             self.AP[self.L0] *= (Debt_BoP[t + 1][self.L0] / Plan_EoP[self.L0])
-        
+
         # save i-th bucket history
-        self.NUM[:, :] = (Debt_BoP > 0.0).mean(axis=1).T
-        self.DBT[:, :] = (Debt_BoP).mean(axis=1).T
-        self.YLD[:, :] = (Debt_Int).mean(axis=1).T
-        self.AMT[:, :] = (Debt_Amt).mean(axis=1).T
-        self.PMT[:, :] = (Debt_Pmt).mean(axis=1).T
-      
+        self.parent.NUM[:, :] = (Debt_BoP > 0.0).mean(axis=1).T
+        self.parent.DBT[:, :] = (Debt_BoP).mean(axis=1).T
+        self.parent.YLD[:, :] = (Debt_Int).mean(axis=1).T
+        self.parent.AMT[:, :] = (Debt_Amt).mean(axis=1).T
+        self.parent.PMT[:, :] = (Debt_Pmt).mean(axis=1).T
+
 
 class CPool(object):
 
-    def __init__(self, inputs, lld_df):
+    # @profiling
+    def __init__(self, inputs, lld_df, **kwargs):
 
         self.N = len(lld_df) # number of buckets
         self.S = inputs.Parameters.NumberOfEventSimulations # number of bucket simulations
         Period = np.timedelta64(1, 'M')
+        Day = np.timedelta64(1, 'D')
 
         # number of period and modeling start/end dates
         self.ModelStart = inputs.Parameters.EvaluationMonth
@@ -302,62 +299,64 @@ class CPool(object):
         # service params
         self.ServPerc = 0.0
         self.ServFix = 0.0
-        
+
         self.ppp = inputs.Adjusts.PartChange
-        
+
         self.replacePrepayments = inputs.Parameters.ReplacePrepayments
-
+        # self.Sim = CSimulatePool(self, replace_pp=inputs.Parameters.ReplacePrepayments)
+        
         # create states
-        self.StateC = CState(self)
-        self.StateD = CState(self)
-        self.StateP = CState(self)
-        
-        # create models and connect them to states
-        self.ModelCD = CModel(self, 'Default', avg_level=inputs.Adjusts.Default * inputs.Parameters.ModelsOfDefaults)
-        if self.replacePrepayments is None:
-            self.ModelCP = CModel(self, 'Prepayment', avg_level=inputs.Adjusts.Prepayment * inputs.Parameters.EarlyPaymentModels)
-            self.ModelPP = CModel(self, 'Partial', avg_level=inputs.Adjusts.Partial * inputs.Parameters.ModelsOfAcceleratedDepreciation**0.5)
-            self.ModelPR = CModel(self, 'PartSize', avg_level=inputs.Adjusts.PartSize * inputs.Parameters.ModelsOfAcceleratedDepreciation**0.5)
-        else:
-            self.ModelCP = CModel(self, 'Prepayment', avg_level=0.0)
-            self.ModelPP = CModel(self, 'Partial', avg_level=0.0)
-            self.ModelPR = CModel(self, 'PartSize', avg_level=0.0)
+        self.States = dict()
 
-        # create connections
-        self.StateC.O_Models.append(self.ModelCD)
-        self.StateC.O_Models.append(self.ModelCP)
-        self.StateD.I_Models.append(self.ModelCD)
-        self.StateP.I_Models.append(self.ModelCP)
-        
+        # this is dependent on migration-model structure
+        for sname in ['C','D','F']:
+            self.States[sname] = CState(self)
+
+        # create models
+        self.Models = dict()
+
+        # ... and connect them to states
+        self.Models['C', 'D'] = CModel(self, 'Default', avg_level=inputs.Adjusts.Default * inputs.Parameters.ModelsOfDefaults)
+        if self.replacePrepayments is None:
+            self.Models['C', 'F'] = CModel(self, 'Prepayment', avg_level=inputs.Adjusts.Prepayment * inputs.Parameters.EarlyPaymentModels)
+            self.Models['P', 'P'] = CModel(self, 'Partial', avg_level=inputs.Adjusts.Partial * inputs.Parameters.ModelsOfAcceleratedDepreciation**0.5)
+            self.Models['P', 'R'] = CModel(self, 'PartSize', avg_level=inputs.Adjusts.PartSize * inputs.Parameters.ModelsOfAcceleratedDepreciation**0.5)
+        else:
+            self.Models['C', 'F'] = CModel(self, 'Prepayment', avg_level=0.0)
+            self.Models['P', 'P'] = CModel(self, 'Partial', avg_level=0.0)
+            self.Models['P', 'R'] = CModel(self, 'PartSize', avg_level=0.0)
+
+        # create connections between states
+        for _out, _inp in self.Models.keys():
+            try:
+                self.States[_out].O_Models.append(self.Models[_out, _inp])
+                self.States[_inp].I_Models.append(self.Models[_out, _inp])
+            except KeyError:
+                pass
+
         self.TimeParams = None
         
         # init lld data
         self.PoolParams = lld_df
         self.Seasoning = self.PoolParams[LLD.Seasoning].values.astype(int)
-        self.StateC.weights[:, 0] = self.PoolParams[LLD.Mortgage_Num].values
-        
+
+        # read adjustment structure
         models = {
-            'Default': self.ModelCD,
-            'Prepayment': self.ModelCP,
-            'Partial': self.ModelPP,
-            'PartSize': self.ModelPR,
+            'Default': self.Models['C', 'D'],
+            'Prepayment': self.Models['C', 'F'],
+            'Partial': self.Models['P', 'P'],
+            'PartSize': self.Models['P', 'R'],
         }
 
-        # set baselines
+        # --- set baselines ---
         for col in inputs.Adjusts.base.columns[1:]:
-            models[col].SetBaseline(np.interp, inputs.Adjusts.base['Period'].values, inputs.Adjusts.base[col].values)
+            models[col].SetBaseline(np.interp, xp=inputs.Adjusts.base['Period'].values, fp=inputs.Adjusts.base[col].values)
 
-        # set time adjusts
-        adjusts = inputs.Adjusts.time_adjusts
-        for cov in adjusts:
-            for col in adjusts[cov].columns[1:]:
-                models[col].SetTimerisk(cov, np.interp, (adjusts[cov]['Value'].values, adjusts[cov][col].values,))
-
-        # set comb adjusts
+        # --- set comb adjusts ---
         adjusts = inputs.Adjusts.comb_adjusts
-        for cov in adjusts:
-            for col in adjusts[cov].columns[1:]:
-                models[col].SetCombrisk(cov, np.interp, (adjusts[cov]['Value'].values, adjusts[cov][col].values,))
+        for key in adjusts:
+            for col in adjusts[key].columns[1:]:
+                models[col].SetCombrisk(key, np.interp, xp=adjusts[key]['Value'].values, fp=adjusts[key][col].values)
 
         # allocate objects
         self.size_N_T1 = (self.N, self.T + 1)
@@ -367,119 +366,127 @@ class CPool(object):
         self.AMT = np.zeros(self.size_N_T1)
         self.PMT = np.zeros(self.size_N_T1)
 
-
-    def Free(self):
+    # @profiling
+    def Free(self, **kwargs):
 
         # clear states
-        self.StateC.Free()
-        self.StateD.Free()
-        self.StateP.Free()
+        for _state in self.States.values():
+            _state.Free()
 
         # clear models
-        self.ModelCD.Free()
-        self.ModelCP.Free()
-        self.ModelPP.Free()
-        self.ModelPR.Free()
+        for _model in self.Models.values():
+            _model.Free()
 
+        # clear other attributes
         for key in vars(self):
             setattr(self, key, None)
 
-    def FlushWeights(self, timedata):
+    # @profiling
+    def FlushWeights(self, timedata, **kwargs):
 
         if isinstance(timedata.index, pd.core.index.MultiIndex):
             self.TimeParams = timedata.loc[pd.IndexSlice[:, :self.ModelEnd], :]
         else:
             self.TimeParams = timedata.loc[:self.ModelEnd, :]
 
-        # clear start debt and weights
-        self.StateC.weights[:, 1:] = 0
-        self.StateC.Survival[:, :] = 0
+        # clear arrays
+        for _state in self.States.values():
+            _state.weights[:] = 0.0
+            _state.Survival[:] = 0.0
 
-        self.StateD.weights[:, :] = 0
-        self.StateD.Survival[:, :] = 0
+        # init lld data
+        self.States['C'].weights[:, 0] = self.PoolParams[LLD.Mortgage_Num].values
 
-        self.StateP.weights[:, :] = 0
-        self.StateP.Survival[:, :] = 0
+        # recompute risks
+        for _model in self.Models.values():
+            _model.UpdateRisks()
 
-        self.ModelCD.UpdateRisks()
-        self.ModelCP.UpdateRisks()
-        self.ModelPP.UpdateRisks()
-        self.ModelPR.UpdateRisks()
-
-    def Survival(self):
+    # @profiling
+    def Survival(self, **kwargs):
 
         # compute survival functions
-        self.StateC.Compute_Survival()
+        for sname in ['C']:
+            self.States[sname].Compute_Survival()
 
         # accumulate conditional migrations
-        self.StateP.Accumulate_Inflows()
-        self.StateD.Accumulate_Inflows()
+        for sname in ['F', 'D']:
+            self.States[sname].Accumulate_Inflows()
 
         # finalize survival functions t = T
-        self.StateD.Survival[:, self.T] += self.StateD.weights[:, self.T]
-        self.StateP.Survival[:, self.T] += self.StateP.weights[:, self.T]
+        for sname in ['F', 'D']:
+            self.States[sname].Survival[:, self.T] += self.States[sname].weights[:, self.T]
 
-    def RunScenario(self):
+    # @profiling
+    def _accumulate_results(self, verbose=False, **kwargs):
 
-        self.ModelPP.GetProb_Partitial()
-        self.ModelPR.GetProb_PartSize()
+        # --- allocate result dataframe ---
+        res = pd.DataFrame(
+            0.0,
+            index=pd.MultiIndex.from_product([range(1), self.Period_Date], names=[CFN.SCN, CFN.DAT]),
+            columns=[CFN.NUM, CFN.DBT, CFN.YLD, CFN.AMT, CFN.ADV] + ([CFN.PLN, CFN.PRT, CFN.FLL, CFN.PDL, CFN.SRV] if verbose else [])
+        )
 
-        sim = CSimulatePool(self, replace_pp=self.replacePrepayments)
+        # --- save result cashflows ---
+        res[CFN.NUM] = np.sum(self.NUM * self.States['C'].Survival, axis=0)
+        res[CFN.DBT] = np.sum(self.DBT * self.States['C'].Survival, axis=0)
+        res[CFN.YLD] = np.sum(self.YLD * self.States['C'].Survival, axis=0)
+
+        if verbose:
+            res[CFN.PLN] = np.sum(self.AMT * self.States['C'].Survival, axis=0)
+            res[CFN.PRT] = np.sum(self.PMT * self.States['C'].Survival, axis=0)
+            res[CFN.FLL].values[:-1] = np.sum(self.DBT * self.States['F'].weights, axis=0)[1:]
+            res[CFN.PDL].values[:-1] = np.sum(self.DBT * self.States['D'].weights, axis=0)[1:]
+            res[CFN.AMT] = res[CFN.PLN] + res[CFN.PRT] + res[CFN.FLL] + res[CFN.PDL]
+            res[CFN.SRV] = self.ServPerc * res[CFN.DBT] + self.ServFix * res[CFN.NUM]
+
+        res[CFN.ADV] = np.sum(self.PMT * self.States['C'].Survival, axis=0)
+        res[CFN.ADV].values[:-1] += np.sum(self.DBT * self.States['F'].weights, axis=0)[1:] + np.sum(self.DBT * self.States['D'].weights, axis=0)[1:]
+        res[CFN.AMT] = res[CFN.ADV] + np.sum(self.AMT * self.States['C'].Survival, axis=0)
+
+        return res
+
+    # @profiling
+    def RunScenario(self, **kwargs):
+
+        self.Models['P', 'P'].GetProb(**kwargs)
+        self.Models['P', 'R'].GetProb(**kwargs)
+
+        sim = CSimulatePool(self, replace_pp=self.replacePrepayments, **kwargs)
         
-        sim.StaticPrepaymentRate()
+        # this cannot be reused
+        sim.StaticPrepaymentRate(**kwargs)
 
         # compute payment plan for an average credit in bucket
         sim.Run(
             self.PoolParams[LLD.Current_Debt].values,
             self.PoolParams[LLD.Interest_Percent].values,
             self.PoolParams[LLD.Maturity].values,
-            self.PoolParams[LLD.Payment].values
+            self.PoolParams[LLD.Payment].values,
+            **kwargs
         )
-        
-        # save i-th bucket history
-        self.NUM[:, :] = sim.NUM
-        self.DBT[:, :] = sim.DBT
-        self.YLD[:, :] = sim.YLD
-        self.AMT[:, :] = sim.AMT
-        self.PMT[:, :] = sim.PMT
 
-        sim.Free()
+        sim.Free(**kwargs)
 
         # --- compute survival probabilities ---
-        self.Survival()
+        self.Survival(**kwargs)
 
-        res = pd.DataFrame(
-            0.0,
-            index=pd.MultiIndex.from_product([range(1), self.Period_Date], names=[CFN.SCN, CFN.DAT]),
-            columns=[CFN.NUM, CFN.DBT, CFN.YLD, CFN.AMT, CFN.ADV]
-        )
+        return self._accumulate_results(**kwargs)
 
-        # --- save result cashflows ---
-        res[CFN.NUM] = np.sum(self.NUM * self.StateC.Survival, axis=0)
-        res[CFN.DBT] = np.sum(self.DBT * self.StateC.Survival, axis=0)
-        res[CFN.YLD] = np.sum(self.YLD * self.StateC.Survival, axis=0)
-
-        res[CFN.ADV] = np.sum(self.PMT * self.StateC.Survival, axis=0)
-        res[CFN.ADV].values[:-1] += np.sum(self.DBT * self.StateP.weights, axis=0)[1:] + np.sum(self.DBT * self.StateD.weights, axis=0)[1:]
-        res[CFN.AMT] = res[CFN.ADV] + np.sum(self.AMT * self.StateC.Survival, axis=0)
-
-        return res
-
-def run(inputs, lld_df, scr_df, seed=None):
+@profiling
+def run(inputs, lld_df, scr_df, seed=None, **kwargs):
 
     np.random.seed(seed)
 
     # --- build pool structure ---
-    pool = CPool(inputs, lld_df)
+    pool = CPool(inputs, lld_df, **kwargs)
 
     # --- update model risks with new time params ---
-    pool.FlushWeights(scr_df)
+    pool.FlushWeights(scr_df, **kwargs)
 
     # --- compute cashflow forecast ---
-    result = pool.RunScenario()
+    result = pool.RunScenario(**kwargs)
 
     # --- clear memory ---
-    pool.Free()
+    pool.Free(**kwargs)
 
     return result
-

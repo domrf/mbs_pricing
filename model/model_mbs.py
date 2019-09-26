@@ -2,10 +2,12 @@
 import numpy as np
 import pandas as pd
 
-from names import CFN
-from scipy.optimize import minimize
+# utility subsystems
+from common import profiling
+from common import debugging
 
-# Метрики ИЦБ
+from impdata.names import CFN
+from scipy.optimize import minimize
 
 def mbs_npv(cf, spread=0.0, useirr=False, weighted=False, usemkt=True):
 
@@ -64,7 +66,7 @@ def mbs_simple_stats(cf, s0, spread):
     # find irr
     irr = mbs_irr(cf, fv0=s0)
 
-    # find Macaulay duration
+    # find Macoley duration
     mac = mbs_durmac(cf, irr=irr)
 
     # find modified duration
@@ -107,24 +109,13 @@ def mbs_cpr_1i(cf):
 
     return a_cpr
 
-
-# Основные функции транширования
-
 def recover_cashflow(df, hst_cf, lldmon, recmon, recday, first_coupon=False):
-    """
-    Функция принимает таблицу смоделированных потоков по пулу ипотек (результирующую таблицу
-    блока модели досрочных погашений) и добавляет к каждому сценарию недостающие для расчета
-    ближайшего денежного потока данные пула (либо реальные значения, либо
-    интерполированные, в зависимости от наличия в базах данных реальных значений).
-    Отсутствующие данные необходимо восстанавливать, так как модель досрочных погашений
-    моделирует потоки пула, начиная с месяца оценки.
-    """
 
     if isinstance(df.index, pd.core.index.MultiIndex):
-        S = len(df.index.levels[0])
+        S = len(df.index.levels[0]) # S = par.NumberOfMonteCarloScenarios
         M = len(df.index.levels[1]) # number of cashflow months
     else:
-        S = 1
+        S = 1 # S = par.NumberOfMonteCarloScenarios
         M = len(df.index) # number of cashflow months
 
     # allocate memory
@@ -140,12 +131,16 @@ def recover_cashflow(df, hst_cf, lldmon, recmon, recday, first_coupon=False):
     EOP[:] = df[CFN.DBT].values.reshape((S, -1,)).T
     YLD[:] = df[CFN.YLD].values.reshape((S, -1,)).T
     AMT[:] = df[CFN.AMT].values.reshape((S, -1,)).T
+    # ADV[:] = (df[CFN.FLL]+df[CFN.PRT]+df[CFN.PDL]).values.reshape((S, -1,)).T
     ADV[:] = df[CFN.ADV].values.reshape((S, -1,)).T
+
+    # reindex dates (the cashflows always start from the LLD-month,
+    # but the index in res_c starts from the evaluation month):
     for i in range(BOP.shape[0]):
         DAT[i] = lldmon + i * np.timedelta64(1, 'M')
         EOP[i] = BOP[i] - AMT[i]
 
-    # some cashflow months should be recovered
+    # recover cashflows from history or by interpolation (if recovering is necessary):
     if lldmon > recmon:
 
         # --- find how many months should be added ---
@@ -176,14 +171,7 @@ def recover_cashflow(df, hst_cf, lldmon, recmon, recday, first_coupon=False):
                 ADV[R-i-1] = ADV[R-i] * BOP[R-i-1] / BOP[R-i]
                 EOP[R-i-1] = BOP[R-i-1] - AMT[R-i-1]
 
-        # --- if we are in the first coupon period and there is no data on YLD for the month   ---
-        # --- when the bond was issued, then need to account for accrued but not paid interest ---
-        if first_coupon == True and DAT[0][0] not in hst_cf.index.values:
-            k = 1.0 - float(recday / (np.datetime64(recmon + 1, 'D') - np.datetime64(recmon, 'D')))
-            YLD[0] = YLD[0] * k
-
     return DAT, BOP, EOP, YLD, AMT, ADV
-
 
 def find_coupon_period(par):
 
@@ -208,14 +196,7 @@ def find_coupon_period(par):
 
     return nxtcpn, prvcpn
 
-
 def mbs_cf_fixed(params, fct_cf, hst_cf, sc=None):
-    """
-    Функция трансформирует дополненную с помощью функции recover_cashflow таблицу
-    смоделированных потоков по пулу ипотек (результирующую таблицу блока досрочных погашений)
-    в таблицу денежных потоков по облигации для бумаг с фиксированным купоном.
-    """
-
     #  1) --- get all of the necessary nominal values and coupon day ---
     if (params.Nominal is None) or (params.Nominal == 0.0):
         Nominal = 1000.0
@@ -239,12 +220,13 @@ def mbs_cf_fixed(params, fct_cf, hst_cf, sc=None):
         next_cpn_mon += params.CouponPeriod
 
     nearest_cpn_mon = next_cpn_mon.copy() # save it under another name for the future
+    last_coupon_mon = nearest_cpn_mon - params.CouponPeriod
 
     # 3) --- recover past missing pool's cashflows needed for the calculation of the nearest bond's CF ---
     if next_cpn_mon == params.FirstCouponMonth:
         DT0, BOP, EOP, YLD, AMT, ADV = recover_cashflow(fct_cf, hst_cf, lldmon=params.ActualLLDMonth, recmon=params.IssuedMonth,recday=params.IssuedDate - params.IssuedMonth + 1, first_coupon = True)
     else:
-        DT0, BOP, EOP, YLD, AMT, ADV = recover_cashflow(fct_cf, hst_cf, lldmon=params.ActualLLDMonth, recmon=next_cpn_mon - params.CouponPeriod, recday=np.timedelta64(0, 'D'))
+        DT0, BOP, EOP, YLD, AMT, ADV = recover_cashflow(fct_cf, hst_cf, lldmon=params.ActualLLDMonth, recmon=last_coupon_mon, recday=np.timedelta64(0, 'D'))
 
     # 4) --- create an array of scenarios' indeces ---
     SCR = np.zeros((BOP.shape[0]+1, BOP.shape[1]), dtype=int)
@@ -257,6 +239,17 @@ def mbs_cf_fixed(params, fct_cf, hst_cf, sc=None):
         else:
             next_cpn_mon += params.CouponPeriod
             DT0[i] = next_cpn_mon
+
+    # 5.1) Now, there may be the case that LLD month is in the very remote past from the evaluation date.
+    #      This can happen in two cases:
+    #      --- either LLD was not updated for a long time
+    #      --- OR the forward estimation is being implemented.
+    # Such situation will result in the current pay period (расчетный период) that is longer than params.CouponPeriod.
+    # To avoid it, we need to cut all series such that the length of the current pay period equals params.CouponPeriod:
+
+    cut = (DT0 == DT0[0]).sum() - int(params.CouponPeriod / np.timedelta64(1, 'M'))
+    if cut > 0:
+        DT0, BOP, EOP, YLD, AMT, ADV, SCR = DT0[cut:], BOP[cut:], EOP[cut:], YLD[cut:], AMT[cut:], ADV[cut:], SCR[cut:]
 
     # 6) --- create an auxiliary dataframe of scenario- & date- multi-indexed pool's cashflows  ---
     DT0 = np.vstack([np.full(BOP.shape[1], params.EvaluationDate) - cpnday, DT0])
@@ -278,9 +271,15 @@ def mbs_cf_fixed(params, fct_cf, hst_cf, sc=None):
     not_clean_up = (res.NOM > clean_up_value).astype(int).replace(0, np.nan).groupby(level=0).fillna(1, limit=1).fillna(0).astype(bool)
     res[['NOM','DEP']] = res[['NOM','DEP']].mask(~not_clean_up, np.nan)
 
+    # 8a) --- create clean-up as a separate column...
+    res['CLN'] = 0.0
+
     # 9) --- make the last bond amortization equal to the last nominal (clean-up is made)  ---
     def clean_up(scenario):
-        scenario.DEP = scenario.DEP.fillna(scenario.NOM.min(), limit=1)
+        dep = scenario.DEP.fillna(scenario.NOM.min(), limit=1)
+        # 9a) ...equal to depreciation ---
+        scenario.CLN = dep - scenario.DEP.fillna(0.0, limit=1)
+        scenario.DEP = dep
         return scenario
     res = res.groupby(level=0).apply(clean_up)
 
@@ -306,8 +305,8 @@ def mbs_cf_fixed(params, fct_cf, hst_cf, sc=None):
     res = res.reset_index()
 
     # 16) --- construct resulting dataframe ---
-    res = res[[CFN.SCN, CFN.DAT, 'Period', 'Delta', 'NOM', 'CF', 'CPN', 'DEP', 'ADV']]
-    res.columns = [CFN.SCN, CFN.DAT, 'Period', 'Delta', 'Debt', 'CF', 'Coupon', 'Depreciation', 'Advance']
+    res = res[[CFN.SCN, CFN.DAT, 'Period', 'Delta', 'NOM', 'CF', 'CPN', 'DEP', 'ADV', 'CLN']]
+    res.columns = [CFN.SCN, CFN.DAT, 'Period', 'Delta', 'Debt', 'CF', 'Coupon', 'Depreciation', 'Advance', 'Cleanup']
 
     # 17) --- add macro-variables
     if sc is not None:
@@ -317,22 +316,23 @@ def mbs_cf_fixed(params, fct_cf, hst_cf, sc=None):
         shiftdelta = (params.EvaluationDate - np.datetime64(macro[CFN.DAT].min(), 'D'))
         macro[CFN.DAT] = macro[CFN.DAT].values.astype('datetime64[D]') + shiftdelta
 
-        def interpolate(scn):
-            coupon_dates = pd.to_numeric(scn[CFN.DAT]).values
-            macro_scenario = macro[macro[CFN.SCN] == scn[CFN.SCN].values[0]]
+        def interpolate(x):
+            coupon_dates = pd.to_numeric(x[CFN.DAT]).values
+            macro_scenario = macro[macro[CFN.SCN] == x[CFN.SCN].values[0]]
             macro_dates = pd.to_numeric(macro_scenario[CFN.DAT]).values
 
+            y = x.copy(deep=True)
             for variable in [CFN.ZCY, CFN.SCR, CFN.SPT, CFN.MS6, CFN.MIR, CFN.HPI, CFN.HPR]:
-                scn[variable] = np.interp(coupon_dates, macro_dates, macro_scenario[variable].values)
+                y[variable] = np.interp(coupon_dates, macro_dates, macro_scenario[variable].values)
 
-            return scn
+            return y
 
         res = res.groupby(CFN.SCN).apply(interpolate)
 
         res[CFN.HPI] *= 100.0
         res[CFN.HPR] = (res[CFN.HPR] - 1.0) * 100.0
 
-    # 18) --- wrap up
+    # 18) --- some final stuff
     res.set_index([CFN.SCN, CFN.DAT], inplace=True)
     res.sort_index(inplace=True)
 
@@ -343,14 +343,7 @@ def mbs_cf_fixed(params, fct_cf, hst_cf, sc=None):
 
     return res
 
-
 def mbs_cf_floating(params, fct_cf, hst_cf, sc=None):
-    """
-    Функция трансформирует дополненную с помощью функции recover_cashflow таблицу
-    смоделированных потоков по пулу ипотек (результирующую таблицу блока досрочных погашений)
-    в таблицу денежных потоков по облигации для бумаг с плавающим купоном.
-    """
-
     #  1) --- get all of the necessary nominal values and coupon day ---
     if (params.Nominal is None) or (params.Nominal == 0.0):
         Nominal = 1000.0
@@ -362,7 +355,7 @@ def mbs_cf_floating(params, fct_cf, hst_cf, sc=None):
     else:
         CurrentNominal = params.CurrentNominal
 
-    CurrentAmount = CurrentNominal * params.StartIssueAmount / Nominal
+    CurrentAmount = (CurrentNominal / Nominal) * params.StartIssueAmount
     cpnday = params.FirstCouponDate - params.FirstCouponMonth
 
     # 2) --- find next coupon payment month ---
@@ -373,15 +366,16 @@ def mbs_cf_floating(params, fct_cf, hst_cf, sc=None):
     if (next_cpn_mon == params.EvaluationMonth) and (next_cpn_mon + cpnday <= params.EvaluationDate):
         next_cpn_mon += params.CouponPeriod
 
-    nearest_cpn_mon = next_cpn_mon.copy() # save it under another name for the future
+    nearest_cpn_mon = next_cpn_mon.copy()  # save it under another name for the future
+    last_coupon_mon = nearest_cpn_mon - params.CouponPeriod
 
     # 3) --- recover past missing pool's cashflows needed for the calculation of the nearest bond's CF ---
     if next_cpn_mon == params.FirstCouponMonth:
-        DT0, BOP, EOP, YLD, AMT, ADV = recover_cashflow(fct_cf, hst_cf, lldmon=params.ActualLLDMonth, recmon=params.IssuedMonth, recday=params.IssuedDate - params.IssuedMonth + 1, first_coupon = True)
+        DT0, BOP, EOP, YLD, AMT, ADV = recover_cashflow(fct_cf, hst_cf, lldmon=params.ActualLLDMonth, recmon=params.IssuedMonth, recday=params.IssuedDate - params.IssuedMonth + 1, first_coupon=True)
     else:
-        DT0, BOP, EOP, YLD, AMT, ADV = recover_cashflow(fct_cf, hst_cf, lldmon=params.ActualLLDMonth, recmon=next_cpn_mon - params.CouponPeriod, recday=np.timedelta64(0, 'D'))
+        DT0, BOP, EOP, YLD, AMT, ADV = recover_cashflow(fct_cf, hst_cf, lldmon=params.ActualLLDMonth, recmon=last_coupon_mon, recday=np.timedelta64(0, 'D'))
 
-    # 4) --- create an array of scenarios' indeces ---
+    # 4) --- create an array of scenarios' indices ---
     SCR = np.zeros((BOP.shape[0]+1, BOP.shape[1]), dtype=int)
     SCR[:, :] = np.array(range(BOP.shape[1]))
 
@@ -392,6 +386,52 @@ def mbs_cf_floating(params, fct_cf, hst_cf, sc=None):
         else:
             next_cpn_mon += params.CouponPeriod
             DT0[i] = next_cpn_mon
+
+    # 5.1) Now, there may be the case that LLD month is in the very remote past from the evaluation date.
+    #      This can happen in two cases:
+    #      --- either LLD was not updated for a long time
+    #      --- OR the forward estimation is being implemented.
+    # Such situation will result in the current pay period (расчетный период) that is longer than params.CouponPeriod.
+    # To avoid it, we need to cut all series such that the length of the current pay period equals params.CouponPeriod:
+
+    cut = (DT0 == DT0[0]).sum() - int(params.CouponPeriod / np.timedelta64(1, 'M'))
+    if cut > 0:
+
+        # A very important moment fot the bonds with a floating coupon:
+        # Следующие две строчки добавлены в начале сентября 2019 года по результатам анализа оценок для готовящегося
+        # выпуска однотраншевой ИЦБ с ежемесячным купоном и плавающей ставкой (ВТБ-4). Возникла проблема, что первый
+        # купон по бумаге в расчетах выходил отрицательным, так как величина полученных процентов оказывалась меньше,
+        # чем сервисный сбор (включающий крупный единовременный платеж NonRecurringExpenses). По резальтатам общения с
+        # коллегами из секьюритизации и анализа проспекта проснилась следующая картина:
+        #    -- дата LLD             --> 2019-07-01;
+        #    -- дата выкупа пула     --> 2019-07-11;
+        #    -- дата оценки          --> 2019-09-05;
+        #    -- дата выпуска ИЦБ     --> 2019-09-28;
+        #    -- дата первого купона  --> 2019-11-28;
+        # В данной ситуации model_mbs должна сформировать первый денежный поток по следующей схеме:
+        # 1) Амортизация = StartIssueAmount - значение DBT (ООД) на 2019-11-01;
+        # 2) Купон первого потока:
+        #
+        #    -- 2.1) С точки зрения реальности:
+        #            Купон = [Процентные поступления за июль, август, сентябрь, октябрь] - сервисные сборы -
+        #                    - величина накопленных, но не выплаченных процентов;
+        #    -- 2.2) С точки зрения того, как эта реальность отражена в model_mbs:
+        #            Купон = [YLD за июль, август, сентябрь, октябрь] -
+        #                    - (DBT (ООД) на 2019-11-01 * VariableExpenses * 0.01 + ConstantExpenses) / 12 -
+        #                    - NonRecurringExpenses;
+        #
+        # ВАЖНО: В NonRecurringExpenses нужно включать величину накопленных, но не выплаченных процентов!
+        # Таким образом, следующие две строчки введены для того, чтобы включить все нужные проценты
+        # [YLD за июль, август, сентябрь, октябрь] внутрь расчетного периода первого денежного потока.
+
+        # Обратить внимание! Такая схема работает только в том случае, если месяц выкупа пула равен месяцу LLD.
+        # В том случае, если месяц LLD будет позже, чем месяц выкупа, то схема не досчитает процентных поступлений.
+        # Такую ситуацию нужно будет продумать в будущем.
+
+        if nearest_cpn_mon == params.FirstCouponMonth:
+            YLD[cut] += YLD[:cut].sum()
+
+        DT0, BOP, EOP, YLD, AMT, ADV, SCR = DT0[cut:], BOP[cut:], EOP[cut:], YLD[cut:], AMT[cut:], ADV[cut:], SCR[cut:]
 
     # 6) --- create an auxiliary dataframe of scenario- & date- multi-indexed pool's cashflows  ---
     DT0 = np.vstack([np.full(BOP.shape[1], params.EvaluationDate) - cpnday, DT0])
@@ -415,9 +455,15 @@ def mbs_cf_floating(params, fct_cf, hst_cf, sc=None):
     not_clean_up = (res.NOM > clean_up_value).astype(int).replace(0, np.nan).groupby(level=0).fillna(1, limit=1).fillna(0).astype(bool)
     res[['NOM','DEP']] = res[['NOM','DEP']].mask(~not_clean_up, np.nan)
 
+    # 8a) --- create clean-up as a separate column...
+    res['CLN'] = 0.0
+
     # 9) --- make the last bond amortization equal to the last nominal (clean-up is made)  ---
     def clean_up(scenario):
-        scenario.DEP = scenario.DEP.fillna(scenario.NOM.min(), limit=1)
+        dep = scenario.DEP.fillna(scenario.NOM.min(), limit=1)
+        # 9a) ...equal to depreciation ---
+        scenario.CLN = dep - scenario.DEP.fillna(0.0, limit=1)
+        scenario.DEP = dep
         return scenario
     res = res.groupby(level=0).apply(clean_up)
 
@@ -452,8 +498,8 @@ def mbs_cf_floating(params, fct_cf, hst_cf, sc=None):
 
     # 16) --- construct resulting dataframe ---
     del res['PERC'], res['SERV']
-    res = res[[CFN.SCN, CFN.DAT, 'Period', 'Delta', 'NOM', 'CF', 'CPN', 'DEP', 'ADV']]
-    res.columns = [CFN.SCN, CFN.DAT, 'Period', 'Delta', 'Debt', 'CF', 'Coupon', 'Depreciation', 'Advance']
+    res = res[[CFN.SCN, CFN.DAT, 'Period', 'Delta', 'NOM', 'CF', 'CPN', 'DEP', 'ADV', 'CLN']]
+    res.columns = [CFN.SCN, CFN.DAT, 'Period', 'Delta', 'Debt', 'CF', 'Coupon', 'Depreciation', 'Advance', 'Cleanup']
 
     # 17) --- add macro-variables
     if sc is not None:
@@ -463,22 +509,23 @@ def mbs_cf_floating(params, fct_cf, hst_cf, sc=None):
         shiftdelta = (params.EvaluationDate - np.datetime64(macro[CFN.DAT].min(), 'D'))
         macro[CFN.DAT] = macro[CFN.DAT].values.astype('datetime64[D]') + shiftdelta
 
-        def interpolate(scn):
-            coupon_dates = pd.to_numeric(scn[CFN.DAT]).values
-            macro_scenario = macro[macro[CFN.SCN] == scn[CFN.SCN].values[0]]
+        def interpolate(x):
+            coupon_dates = pd.to_numeric(x[CFN.DAT]).values
+            macro_scenario = macro[macro[CFN.SCN] == x[CFN.SCN].values[0]]
             macro_dates = pd.to_numeric(macro_scenario[CFN.DAT]).values
 
+            y = x.copy(deep=True)
             for variable in [CFN.ZCY, CFN.SCR, CFN.SPT, CFN.MS6, CFN.MIR, CFN.HPI, CFN.HPR]:
-                scn[variable] = np.interp(coupon_dates, macro_dates, macro_scenario[variable].values)
+                y[variable] = np.interp(coupon_dates, macro_dates, macro_scenario[variable].values)
 
-            return scn
+            return y
 
         res = res.groupby(CFN.SCN).apply(interpolate)
 
         res[CFN.HPI] *= 100.0
         res[CFN.HPR] = (res[CFN.HPR] - 1.0) * 100.0
 
-    # 18) --- wrap up
+    # 18) --- some final stuff
     res.set_index([CFN.SCN, CFN.DAT], inplace=True)
     res.sort_index(inplace=True)
 
@@ -488,16 +535,6 @@ def mbs_cf_floating(params, fct_cf, hst_cf, sc=None):
     res.fillna(0.0, inplace=True)
 
     return res
-
-def run(inputs, cashflows, scenarios):
-
-    # --- compute RMBS flow ---
-    if inputs.Parameters.CouponType == "Fixed":
-        return mbs_cf_fixed(params=inputs.Parameters, fct_cf=cashflows, hst_cf=inputs.Datasets.Hist_CF, sc=scenarios)
-    elif inputs.Parameters.CouponType == "Floating":
-        return mbs_cf_floating(params=inputs.Parameters, fct_cf=cashflows, hst_cf=inputs.Datasets.Hist_CF, sc=scenarios)
-
-    return mbs_cf_fixed(params=inputs.Parameters, fct_cf=cashflows, hst_cf=inputs.Datasets.Hist_CF, sc=scenarios)
 
 def stats(cfc, cfm, cfp, par, draw_hist=True):
 
@@ -550,7 +587,10 @@ def stats(cfc, cfm, cfp, par, draw_hist=True):
     # find price
     fv = mbs_npv(cfc, spread=used_spread, usemkt=False)
 
-    prm = 100.0 * fv / (par.CurrentNominal * par.StartIssueAmount / par.Nominal)
+    # # sequential version
+    # irr_dist = mbs_rate(cfc, fv.mean(), len(fv))
+
+    prm = 100.0 * fv / ((par.CurrentNominal / par.Nominal) * par.StartIssueAmount)
 
     res.loc[dirty_price, 'Average'] = prm.mean()
     res.loc[spread_oas, 'Average'] = used_spread
@@ -582,7 +622,7 @@ def stats(cfc, cfm, cfp, par, draw_hist=True):
         hmax = np.round(max(prm.max(), (prm - ACI).max()), 2) + 0.01
         grid = np.linspace(hmin, hmax, 20)
 
-        Dirty= np.bincount(np.digitize(prm.values, bins=grid), minlength=len(grid))[1:].astype(float) / len(prm)
+        Dirty = np.bincount(np.digitize(prm.values, bins=grid), minlength=len(grid))[1:].astype(float) / len(prm)
         Clear = np.bincount(np.digitize((prm - ACI).values, bins=grid), minlength=len(grid))[1:].astype(float) / len(prm)
 
         hf = pd.DataFrame(
@@ -596,3 +636,19 @@ def stats(cfc, cfm, cfp, par, draw_hist=True):
         hf = None
 
     return res, hf
+
+# @debugging
+@profiling
+def run(inputs, cashflows, scenarios, verbose=False, **kwargs):
+
+    result = None
+
+    # --- compute rmbsflow ---
+    if inputs.Parameters.CouponType == "Fixed":
+        result = mbs_cf_fixed(params=inputs.Parameters, fct_cf=cashflows, hst_cf=inputs.Datasets.Hist_CF, sc=scenarios)
+    elif inputs.Parameters.CouponType == "Floating":
+        result = mbs_cf_floating(params=inputs.Parameters, fct_cf=cashflows, hst_cf=inputs.Datasets.Hist_CF, sc=scenarios)
+    else:
+        result = mbs_cf_fixed(params=inputs.Parameters, fct_cf=cashflows, hst_cf=inputs.Datasets.Hist_CF, sc=scenarios)
+
+    return result

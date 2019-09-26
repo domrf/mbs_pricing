@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from model import LLD
+from impdata.names import LLD
 import specs
 
 
@@ -293,8 +293,8 @@ if __name__ == "__main__":
     # # === EXAMPLE OF USAGE ===
     # # --- to use script from IDE ---
     # argslist = [
-    #     '-i', r'C:\CFM_Public\examples\RU000A0ZYJT2\LLD 2019-04-01.csv',
-    #     '-o', r'C:\CFM_Public\examples\RU000A0ZYJT2\temp_LLD 2019-04-01.csv',
+    #     '-i', r'\\vfs02.ahml1.ru\CFM\WORK_DIR\Queue\Service\queue1\inp_lld.csv',
+    #     # '-o', r'C:\CFM_Public\examples\RU000A0ZYJT2\temp_LLD 2019-04-01.csv',
     # ]
     # main(parser.parse_args(argslist))
     # # --- to use script from IDE ---
