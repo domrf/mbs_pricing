@@ -683,7 +683,7 @@ class VariablePlot(object):
         self.evaluation_date = dt.datetime(year, month, 15).date().replace(day=15).strftime('%Y-%m-%d')
 
         # Сохраняем параметры запрошенной оценки внутри объекта управления оценками (estimation_series):
-        self.main_frame.estimation_series.add_model(self.evaluation_date, self.isin, many_scenarios=self.many_scenarios, panel=self.panel)
+        self.main_frame.estimation_series.refill_model(self.evaluation_date, self.isin, self.many_scenarios, self.panel)
 
         # Заказываем загрузку модели и просим оповестить об окончании с помощью события EVT_RESULT_READY:
         self.main_frame.estimation_series.prepare_model(self.panel.id)
@@ -770,7 +770,7 @@ class VariablePlot(object):
             self.set_cursor_walking(self.sql_variable_table[self.column], self.modified_variable_table, self.modified_update_text_controls, type='modified')
             self.modified_line.set_data([self.modified_variable_table.index.values, self.modified_variable_table[self.column].values])
             self.main_frame.estimation_series.prepared_and_drawn[self.panel.id] = True
-            self.main_frame.update_RMSE_value(self.main_frame.estimation_series.calculate_total_rmse(model.CFN.CPR))
+            # self.main_frame.update_RMSE_value(self.main_frame.estimation_series.calculate_total_rmse(model.CFN.CPR))
         else:
             pass
 

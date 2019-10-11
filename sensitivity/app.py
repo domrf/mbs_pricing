@@ -75,14 +75,7 @@ class EmptyPanelForNewVariable(wx.Panel):
         num_of_vars = scrolled_panel.number_of_variables
         scrolled_panel.__dict__['var'+str(num_of_vars)] = PanelForVariable(scrolled_panel, self.main_frame, id=num_of_vars)
 
-        # self.main_frame.estimation_series.series.append(None)
-        # self.main_frame.estimation_series.models.append(None)
-        # self.main_frame.estimation_series.panels.append(None)
-        # self.main_frame.estimation_series.sql_results.append(None)
-        # self.main_frame.estimation_series.base_results.append(None)
-        # self.main_frame.estimation_series.modified_results.append(None)
-        # self.main_frame.estimation_series.prepared_and_drawn.append(None)
-        # self.main_frame.estimation_series.many_scenarios.append(None)
+        self.main_frame.estimation_series.add_blank_model()
 
         if not bool(num_of_vars % 2):
             scrolled_panel.vbox_left.Hide(len(scrolled_panel.vbox_left.Children)-1)

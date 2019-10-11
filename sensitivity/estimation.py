@@ -311,37 +311,38 @@ class EstimationSeries(object):
         # return callback
         pass
 
-    def add_model(self, curdate, bondisin, many_scenarios=False, panel=None):
+    def add_blank_model(self):
 
-        try:
-            # model object and connected panel
-            self.series[panel.id] = (curdate, bondisin)
-            # self.models[panel.id] = Estimation()
-            # self.panels[panel.id] = panel
+        # model object and connected panel
+        self.series.append(None)
+        self.models.append(None)
+        self.panels.append(None)
 
-            # results to draw
-            self.sql_results[panel.id] = None
-            self.base_results[panel.id] = None
-            self.modified_results[panel.id] = None
+        # results to draw
+        self.sql_results.append(None)
+        self.base_results.append(None)
+        self.modified_results.append(None)
 
-            # some parameters
-            self.prepared_and_drawn[panel.id] = False  # deprecated
-            self.many_scenarios[panel.id] = many_scenarios
-        except:
+        # some parameters
+        self.prepared_and_drawn.append(False)  # deprecated
+        self.many_scenarios.append(False)
 
-            # model object and connected panel
-            self.series.append((curdate, bondisin))
-            self.models.append(Estimation())
-            self.panels.append(panel)
+    def refill_model(self, curdate, bondisin, many_scenarios, panel):
 
-            # results to draw
-            self.sql_results.append(None)
-            self.base_results.append(None)
-            self.modified_results.append(None)
+        # model object and connected panel
+        self.series[panel.id] = (curdate, bondisin)
+        if self.models[panel.id] is None:
+            self.models[panel.id] = Estimation()
+        self.panels[panel.id] = panel
 
-            # some parameters
-            self.prepared_and_drawn.append(False) # deprecated
-            self.many_scenarios.append(many_scenarios)
+        # results to draw
+        self.sql_results[panel.id] = None
+        self.base_results[panel.id] = None
+        self.modified_results[panel.id] = None
+
+        # some parameters
+        self.prepared_and_drawn[panel.id] = False  # deprecated
+        self.many_scenarios[panel.id] = many_scenarios
 
     def _prepare_model(self, id):
 
@@ -443,8 +444,10 @@ class EstimationSeries(object):
     def only_rmse(self, hst, res, column):
 
         idx = sorted(list(set(hst.index.values) & set(res.index.values)))
-
-        return (np.nansum((hst.loc[idx, column].values - res.loc[idx, column].values) ** 2) / len(idx))**0.5
+        if len(idx) > 0:
+            return (np.nansum((hst.loc[idx, column].values - res.loc[idx, column].values) ** 2) / len(idx))**0.5
+        else:
+            return 0.0
 
     # deprecated
     def rmse(self, id, column):
